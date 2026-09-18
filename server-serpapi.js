@@ -243,7 +243,9 @@ function extractBaggageInfo(itinerary) {
   const texts = [];
   const add = value => {
     if (Array.isArray(value)) value.forEach(add);
-    else if (value !== null && value !== undefined && String(value).trim()) texts.push(String(value).trim());
+    else if (value !== null && value !== undefined && String(value).trim()) {
+      texts.push(String(value).trim());
+    }
   };
 
   add(itinerary?.extensions);
@@ -253,20 +255,36 @@ function extractBaggageInfo(itinerary) {
 
   const unique = [...new Set(texts)];
   const all = unique.join(' | ');
-  const checkedMatch = all.match(/(?:([0-9]+)\s*)?(?:free\s+)?checked\s+baggage|(?:([0-9]+)\s*)?(?:free\s+)?checked\s+bag/i);
-  const carryMatch = all.match(/(?:([0-9]+)\s*)?(?:free\s+)?carry[- ]?on(?:\s+baggage|\s+bag)?/i);
-  const checkedForFee = /checked\s+(?:baggage|bag).*?(?:fee|paid|charge)|(?:fee|paid|charge).*?checked\s+(?:baggage|bag)/i.test(all);
+
+  // مهم: لا نعتبر أي رقم بالكيلو جرام في extensions وزنًا للأمتعة.
+  // SerpApi قد يضع أرقامًا مثل انبعاثات الكربون أو مواصفات أخرى،
+  // لذلك نستخدم فقط نصًا صريحًا يدل على عدد الحقائب.
+  const checkedNumberMatch = all.match(/\b(\d+)\s*(?:free\s+)?(?:checked\s+(?:baggage|bags?|luggage))\b/i);
+  const checkedOrdinalMatch = all.match(/\b(\d+)(?:st|nd|rd|th)\s+checked\s+(?:bag|baggage)\b/i);
+  const carryNumberMatch = all.match(/\b(\d+)\s*(?:free\s+)?carry[- ]?on(?:\s+(?:baggage|bags?|bag))?\b/i);
+  const carrySimpleMatch = all.match(/\bcarry[- ]?on(?:\s+(?:baggage|bags?|bag))?\b/i);
+
+  const checkedForFee = /checked\s+(?:baggage|bags?|luggage).*?(?:fee|paid|charge)|(?:fee|paid|charge).*?checked\s+(?:baggage|bags?|luggage)/i.test(all);
   const carryForFee = /carry[- ]?on.*?(?:fee|paid|charge)|(?:fee|paid|charge).*?carry[- ]?on/i.test(all);
-  const weightMatches = [...all.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*kg/gi)].map(m => Number(m[1])).filter(Number.isFinite);
+
+  let checkedQuantity = null;
+  if (checkedNumberMatch?.[1]) checkedQuantity = Number(checkedNumberMatch[1]);
+  else if (checkedOrdinalMatch?.[1]) checkedQuantity = 1;
+
+  let carryOnQuantity = null;
+  if (carryNumberMatch?.[1]) carryOnQuantity = Number(carryNumberMatch[1]);
+  else if (carrySimpleMatch) carryOnQuantity = 1;
 
   return {
-    checkedIncluded: Boolean(checkedMatch && !checkedForFee),
-    checkedQuantity: checkedMatch ? Number(checkedMatch[1] || checkedMatch[2] || 1) : 0,
+    source: 'serpapi',
+    checkedIncluded: checkedQuantity !== null && !checkedForFee,
+    checkedQuantity,
     checkedForFee,
-    carryOnIncluded: Boolean(carryMatch && !carryForFee),
-    carryOnQuantity: carryMatch ? Number(carryMatch[1] || 1) : 0,
+    carryOnIncluded: carryOnQuantity !== null && !carryForFee,
+    carryOnQuantity,
     carryOnForFee: carryForFee,
-    weightKg: weightMatches.length ? Math.max(...weightMatches) : null,
+    // لا نرسل وزنًا مستنتجًا من نصوص عامة.
+    weightKg: null,
     extensions: unique,
   };
 }
