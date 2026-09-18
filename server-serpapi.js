@@ -239,6 +239,38 @@ function airlineCodeFromSegment(segment) {
   return numberMatch?.[1]?.toUpperCase() || '';
 }
 
+function extractBaggageInfo(itinerary) {
+  const texts = [];
+  const add = value => {
+    if (Array.isArray(value)) value.forEach(add);
+    else if (value !== null && value !== undefined && String(value).trim()) texts.push(String(value).trim());
+  };
+
+  add(itinerary?.extensions);
+  for (const segment of (Array.isArray(itinerary?.flights) ? itinerary.flights : [])) {
+    add(segment?.extensions);
+  }
+
+  const unique = [...new Set(texts)];
+  const all = unique.join(' | ');
+  const checkedMatch = all.match(/(?:([0-9]+)\s*)?(?:free\s+)?checked\s+baggage|(?:([0-9]+)\s*)?(?:free\s+)?checked\s+bag/i);
+  const carryMatch = all.match(/(?:([0-9]+)\s*)?(?:free\s+)?carry[- ]?on(?:\s+baggage|\s+bag)?/i);
+  const checkedForFee = /checked\s+(?:baggage|bag).*?(?:fee|paid|charge)|(?:fee|paid|charge).*?checked\s+(?:baggage|bag)/i.test(all);
+  const carryForFee = /carry[- ]?on.*?(?:fee|paid|charge)|(?:fee|paid|charge).*?carry[- ]?on/i.test(all);
+  const weightMatches = [...all.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*kg/gi)].map(m => Number(m[1])).filter(Number.isFinite);
+
+  return {
+    checkedIncluded: Boolean(checkedMatch && !checkedForFee),
+    checkedQuantity: checkedMatch ? Number(checkedMatch[1] || checkedMatch[2] || 1) : 0,
+    checkedForFee,
+    carryOnIncluded: Boolean(carryMatch && !carryForFee),
+    carryOnQuantity: carryMatch ? Number(carryMatch[1] || 1) : 0,
+    carryOnForFee: carryForFee,
+    weightKg: weightMatches.length ? Math.max(...weightMatches) : null,
+    extensions: unique,
+  };
+}
+
 function normalizeItinerary(itinerary, outboundDate, inboundDate) {
   const price = Number(itinerary?.price);
   if (!Number.isFinite(price) || price < 0) return null;
@@ -296,6 +328,11 @@ function normalizeItinerary(itinerary, outboundDate, inboundDate) {
     inbound?.arrTime || '',
   ].join('|');
 
+  const baggage = extractBaggageInfo(itinerary);
+  const firstSegment = segments[0] || {};
+  const carbon = itinerary?.carbon_emissions || null;
+  const extensions = Array.isArray(itinerary?.extensions) ? itinerary.extensions : [];
+
   return {
     id: `serp_${makeId(key)}`,
     source: 'serpapi',
@@ -325,8 +362,11 @@ function normalizeItinerary(itinerary, outboundDate, inboundDate) {
     originalPrice: Math.round(price),
     originalCurrency: 'EGP',
     seatsLeft: null,
-    cabin: null,
-    baggage: null,
+    cabin: firstSegment?.travel_class || null,
+    baggage,
+    extensions,
+    airplane: firstSegment?.airplane || null,
+    carbonEmissions: carbon,
     refundable: null,
     refundPenalty: null,
     refundPenaltyCurrency: null,
