@@ -405,9 +405,6 @@ async function searchOneWay(search) {
   const currency = data?.search_parameters?.currency || 'EGP';
 
   return getItineraries(data)
-    // في البحث ذهاب فقط نقبل فقط النتائج التي لا تمثل رحلة ذهاب وعودة.
-    // هذا يمنع أي نتيجة Round trip من الظهور كبطاقة ذهاب فقط.
-    .filter(item => String(item?.type || '').toLowerCase() !== 'round trip')
     .map(item => normalizeItinerary(item, search.departDate, null))
     .filter(Boolean)
     .map(item => ({ ...item, currency, originalCurrency: currency }));
@@ -429,69 +426,12 @@ async function searchRoundTrip(search) {
         const params = buildBaseParams(search);
         params.set('departure_token', String(outbound.departure_token));
 
-        const outboundNormalized = normalizeItinerary(
-          outbound,
-          search.departDate,
-          null
-        );
-
-        if (!outboundNormalized) return [];
-
         const returnData = await fetchSerpApi(params);
         const returnOptions = getItineraries(returnData)
           .slice(0, MAX_RETURN_OPTIONS_PER_OUTBOUND);
 
         return returnOptions
-          .map(returnItem => {
-            // نتيجة طلب العودة تحتوي على رحلة العودة فقط.
-            // ندمجها هنا مع رحلة الذهاب المرتبطة بـ departure_token
-            // حتى تصل للواجهة كبطاقة واحدة مثل نتائج Duffel.
-            const inboundNormalized = normalizeItinerary(
-              returnItem,
-              search.returnDate,
-              null
-            );
-
-            if (!inboundNormalized) return null;
-
-            const combinedKey = [
-              outboundNormalized.id,
-              inboundNormalized.id,
-            ].join('|');
-
-            // السعر المطلوب في جوّك هنا هو مجموع سعر الذهاب وسعر العودة.
-            // نأخذ سعر رحلة الذهاب من نتيجة البحث الأولى، وسعر رحلة العودة
-            // من النتيجة التي رجعت بعد departure_token، ثم نجمعهما.
-            const outboundPrice = Number(outbound?.price);
-            const returnPrice = Number(returnItem?.price);
-
-            if (!Number.isFinite(outboundPrice) || outboundPrice < 0) return null;
-            if (!Number.isFinite(returnPrice) || returnPrice < 0) return null;
-
-            const price = outboundPrice + returnPrice;
-
-            if (!Number.isFinite(price) || price < 0) return null;
-
-            return {
-              ...outboundNormalized,
-              id: `serp_${makeId(combinedKey)}`,
-              returnLeg: {
-                from: inboundNormalized.from,
-                to: inboundNormalized.to,
-                depTime: inboundNormalized.depTime,
-                arrTime: inboundNormalized.arrTime,
-                durationMinutes: inboundNormalized.durationMinutes,
-                stops: inboundNormalized.stops,
-                flightNumber: inboundNormalized.flightNumber,
-              },
-              price,
-              currency,
-              originalPrice: Math.round(price),
-              originalCurrency: currency,
-              // Keep the booking token of the actual round-trip option.
-              bookingToken: returnItem?.booking_token || outbound.booking_token || null,
-            };
-          })
+          .map(item => normalizeItinerary(item, search.departDate, search.returnDate))
           .filter(Boolean);
       } catch (err) {
         console.error('SerpApi return search failed:', err?.message || err);
