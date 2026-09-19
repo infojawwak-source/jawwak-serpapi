@@ -405,6 +405,9 @@ async function searchOneWay(search) {
   const currency = data?.search_parameters?.currency || 'EGP';
 
   return getItineraries(data)
+    // في البحث ذهاب فقط نقبل فقط النتائج التي لا تمثل رحلة ذهاب وعودة.
+    // هذا يمنع أي نتيجة Round trip من الظهور كبطاقة ذهاب فقط.
+    .filter(item => String(item?.type || '').toLowerCase() !== 'round trip')
     .map(item => normalizeItinerary(item, search.departDate, null))
     .filter(Boolean)
     .map(item => ({ ...item, currency, originalCurrency: currency }));
@@ -456,16 +459,12 @@ async function searchRoundTrip(search) {
               inboundNormalized.id,
             ].join('|');
 
-            // في بحث الذهاب والعودة نحتاج السعر الإجمالي للرحلتين.
-            // نستخدم سعر الذهاب من النتيجة الأولى + سعر خيار العودة
-            // من نتيجة departure_token، حتى لا يظهر سعر ساق واحدة فقط.
-            const outboundPrice = Number(outboundNormalized.price);
-            const returnPrice = Number(returnItem?.price);
-            const price = Number.isFinite(outboundPrice) && Number.isFinite(returnPrice)
-              ? outboundPrice + returnPrice
-              : Number.isFinite(returnPrice)
-                ? returnPrice
-                : outboundPrice;
+            // في بحث Round trip، SerpApi يعيد السعر في نتيجة الذهاب
+            // كسعر التذكرة/الرحلة ذهابًا وعودة، وليس كسعر ساق الذهاب فقط.
+            // لذلك لا نجمع سعر returnItem معه حتى لا يتضاعف السعر.
+            const price = Number(outbound?.price);
+
+            if (!Number.isFinite(price) || price < 0) return null;
 
             return {
               ...outboundNormalized,
