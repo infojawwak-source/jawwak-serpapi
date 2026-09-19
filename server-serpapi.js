@@ -456,10 +456,16 @@ async function searchRoundTrip(search) {
               inboundNormalized.id,
             ].join('|');
 
-            const totalPrice = Number(returnItem?.price);
-            const price = Number.isFinite(totalPrice)
-              ? totalPrice
-              : outboundNormalized.price;
+            // في بحث الذهاب والعودة نحتاج السعر الإجمالي للرحلتين.
+            // نستخدم سعر الذهاب من النتيجة الأولى + سعر خيار العودة
+            // من نتيجة departure_token، حتى لا يظهر سعر ساق واحدة فقط.
+            const outboundPrice = Number(outboundNormalized.price);
+            const returnPrice = Number(returnItem?.price);
+            const price = Number.isFinite(outboundPrice) && Number.isFinite(returnPrice)
+              ? outboundPrice + returnPrice
+              : Number.isFinite(returnPrice)
+                ? returnPrice
+                : outboundPrice;
 
             return {
               ...outboundNormalized,
