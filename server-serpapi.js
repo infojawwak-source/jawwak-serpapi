@@ -239,93 +239,6 @@ function airlineCodeFromSegment(segment) {
   return numberMatch?.[1]?.toUpperCase() || '';
 }
 
-function extractBaggageInfo(itinerary) {
-  const texts = [];
-  const add = value => {
-    if (Array.isArray(value)) value.forEach(add);
-    else if (value !== null && value !== undefined && String(value).trim()) texts.push(String(value).trim());
-  };
-
-  add(itinerary?.extensions);
-  for (const segment of (Array.isArray(itinerary?.flights) ? itinerary.flights : [])) {
-    add(segment?.extensions);
-  }
-
-  const unique = [...new Set(texts)];
-  const all = unique.join(' | ');
-
-  // نقرأ فقط بيانات الأمتعة الصريحة من المصدر.
-  // لا نستخدم أي رقم عام متبوع بـ kg حتى لا نخلط بين وزن الأمتعة وأي بيانات أخرى.
-  const extractBag = (type) => {
-    const isChecked = type === 'checked';
-    const label = isChecked
-      ? '(?:checked\s+(?:baggage|bag|bags))'
-      : '(?:carry[- ]?on(?:\s+(?:baggage|bag|bags))?)';
-
-    const countPatterns = [
-      new RegExp('(?:^|\\b)(\\d+)\\s*(?:free\\s+)?' + label + '(?:\\b|$)', 'i'),
-      new RegExp('(?:^|\\b)(\\d+)\\s*(?:st|nd|rd|th)?\\s*' + label + '(?:\\b|$)', 'i'),
-      new RegExp(label + '\\s*[:\\-]?\\s*(\\d+)\\s*(?:piece|pieces|bag|bags)?', 'i'),
-    ];
-
-    let quantity = 0;
-    for (const re of countPatterns) {
-      const m = all.match(re);
-      if (m) {
-        quantity = Number(m[1]);
-        if (Number.isFinite(quantity) && quantity > 0) break;
-      }
-    }
-
-    // نلتقط الوزن فقط إذا كان مرتبطًا مباشرة ببيان الأمتعة، مثل:
-    // "1 checked bag up to 23 kg" أو "23 kg checked bag".
-    const weightPatterns = [
-      new RegExp('(?:\\d+\\s*(?:st|nd|rd|th)?\\s*)?' + label + '.{0,80}?(\\d+(?:\\.\\d+)?)\\s*kg', 'i'),
-      new RegExp('(\\d+(?:\\.\\d+)?)\\s*kg.{0,80}?(?:\\d+\\s*(?:st|nd|rd|th)?\\s*)?' + label, 'i'),
-    ];
-
-    let weightKg = null;
-    for (const re of weightPatterns) {
-      const m = all.match(re);
-      if (m) {
-        const value = Number(m[1]);
-        if (Number.isFinite(value) && value > 0 && value <= 100) {
-          weightKg = value;
-          break;
-        }
-      }
-    }
-
-    const feeRe = isChecked
-      ? /checked\s+(?:baggage|bag|bags).*?(?:fee|paid|charge)|(?:fee|paid|charge).*?checked\s+(?:baggage|bag|bags)/i
-      : /carry[- ]?on.*?(?:fee|paid|charge)|(?:fee|paid|charge).*?carry[- ]?on/i;
-
-    const mentioned = new RegExp(label, 'i').test(all);
-    const forFee = feeRe.test(all);
-
-    return {
-      quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
-      weightKg,
-      mentioned,
-      forFee,
-    };
-  };
-
-  const checked = extractBag('checked');
-  const carryOn = extractBag('carryOn');
-
-  return {
-    checkedIncluded: checked.quantity > 0 && !checked.forFee,
-    checkedQuantity: checked.quantity,
-    checkedWeightKg: checked.weightKg,
-    checkedForFee: checked.forFee,
-    carryOnIncluded: carryOn.quantity > 0 && !carryOn.forFee,
-    carryOnQuantity: carryOn.quantity,
-    carryOnWeightKg: carryOn.weightKg,
-    carryOnForFee: carryOn.forFee,
-  };
-}
-
 function normalizeItinerary(itinerary, outboundDate, inboundDate) {
   const price = Number(itinerary?.price);
   if (!Number.isFinite(price) || price < 0) return null;
@@ -383,11 +296,6 @@ function normalizeItinerary(itinerary, outboundDate, inboundDate) {
     inbound?.arrTime || '',
   ].join('|');
 
-  const baggage = extractBaggageInfo(itinerary);
-  const firstSegment = segments[0] || {};
-  const carbon = itinerary?.carbon_emissions || null;
-  const extensions = Array.isArray(itinerary?.extensions) ? itinerary.extensions : [];
-
   return {
     id: `serp_${makeId(key)}`,
     source: 'serpapi',
@@ -417,11 +325,8 @@ function normalizeItinerary(itinerary, outboundDate, inboundDate) {
     originalPrice: Math.round(price),
     originalCurrency: 'EGP',
     seatsLeft: null,
-    cabin: firstSegment?.travel_class || null,
-    baggage,
-    extensions,
-    airplane: firstSegment?.airplane || null,
-    carbonEmissions: carbon,
+    cabin: null,
+    baggage: null,
     refundable: null,
     refundPenalty: null,
     refundPenaltyCurrency: null,
@@ -521,12 +426,61 @@ async function searchRoundTrip(search) {
         const params = buildBaseParams(search);
         params.set('departure_token', String(outbound.departure_token));
 
+        const outboundNormalized = normalizeItinerary(
+          outbound,
+          search.departDate,
+          null
+        );
+
+        if (!outboundNormalized) return [];
+
         const returnData = await fetchSerpApi(params);
         const returnOptions = getItineraries(returnData)
           .slice(0, MAX_RETURN_OPTIONS_PER_OUTBOUND);
 
         return returnOptions
-          .map(item => normalizeItinerary(item, search.departDate, search.returnDate))
+          .map(returnItem => {
+            // نتيجة طلب العودة تحتوي على رحلة العودة فقط.
+            // ندمجها هنا مع رحلة الذهاب المرتبطة بـ departure_token
+            // حتى تصل للواجهة كبطاقة واحدة مثل نتائج Duffel.
+            const inboundNormalized = normalizeItinerary(
+              returnItem,
+              search.returnDate,
+              null
+            );
+
+            if (!inboundNormalized) return null;
+
+            const combinedKey = [
+              outboundNormalized.id,
+              inboundNormalized.id,
+            ].join('|');
+
+            const totalPrice = Number(returnItem?.price);
+            const price = Number.isFinite(totalPrice)
+              ? totalPrice
+              : outboundNormalized.price;
+
+            return {
+              ...outboundNormalized,
+              id: `serp_${makeId(combinedKey)}`,
+              returnLeg: {
+                from: inboundNormalized.from,
+                to: inboundNormalized.to,
+                depTime: inboundNormalized.depTime,
+                arrTime: inboundNormalized.arrTime,
+                durationMinutes: inboundNormalized.durationMinutes,
+                stops: inboundNormalized.stops,
+                flightNumber: inboundNormalized.flightNumber,
+              },
+              price,
+              currency,
+              originalPrice: Math.round(price),
+              originalCurrency: currency,
+              // Keep the booking token of the actual round-trip option.
+              bookingToken: returnItem?.booking_token || outbound.booking_token || null,
+            };
+          })
           .filter(Boolean);
       } catch (err) {
         console.error('SerpApi return search failed:', err?.message || err);
