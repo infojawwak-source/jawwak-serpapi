@@ -459,10 +459,18 @@ async function searchRoundTrip(search) {
               inboundNormalized.id,
             ].join('|');
 
-            // في بحث Round trip، SerpApi يعيد السعر في نتيجة الذهاب
-            // كسعر التذكرة/الرحلة ذهابًا وعودة، وليس كسعر ساق الذهاب فقط.
-            // لذلك لا نجمع سعر returnItem معه حتى لا يتضاعف السعر.
-            const price = Number(outbound?.price);
+            // السعر النهائي يجب أن يطابق تركيبة الذهاب + العودة المختارة.
+            // مهم: في SerpApi نتيجة Round trip لا تعرض سعر ساق العودة
+            // كسعر مستقل يمكن جمعه مع outbound.price؛ سعر returnItem
+            // بعد استخدام departure_token هو سعر التذكرة/التركيبة المختارة.
+            // لذلك نستخدم سعر returnItem عندما يكون متاحًا، ولا نضاعفه
+            // بإضافة outbound.price مرة أخرى. وإذا لم يوجد، نرجع لسعر الذهاب.
+            const outboundPrice = Number(outbound?.price);
+            const selectedRoundTripPrice = Number(returnItem?.price);
+
+            const price = Number.isFinite(selectedRoundTripPrice) && selectedRoundTripPrice >= 0
+              ? selectedRoundTripPrice
+              : outboundPrice;
 
             if (!Number.isFinite(price) || price < 0) return null;
 
