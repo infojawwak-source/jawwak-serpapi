@@ -430,8 +430,66 @@ async function searchRoundTrip(search) {
         const returnOptions = getItineraries(returnData)
           .slice(0, MAX_RETURN_OPTIONS_PER_OUTBOUND);
 
+        const outboundNormalized = normalizeItinerary(
+          outbound,
+          search.departDate,
+          null
+        );
+
+        if (!outboundNormalized) return [];
+
         return returnOptions
-          .map(item => normalizeItinerary(item, search.departDate, search.returnDate))
+          .map(returnItem => {
+            // نتيجة departure_token تمثل خيار العودة المرتبط
+            // برحلة الذهاب الأصلية، لذلك ندمج الساقين في بطاقة واحدة.
+            const inboundNormalized = normalizeItinerary(
+              returnItem,
+              search.returnDate,
+              null
+            );
+
+            if (!inboundNormalized) return null;
+
+            const combinedKey = [
+              outboundNormalized.id,
+              inboundNormalized.id,
+            ].join('|');
+
+            // نستخدم سعر نتيجة العودة المرتبطة بـ departure_token
+            // كسعر التركيبة الكاملة كما يعيده SerpApi، ولا نجمعه
+            // مرة ثانية مع سعر الذهاب حتى لا يحدث double-counting.
+            const selectedRoundTripPrice = Number(returnItem?.price);
+            const outboundPrice = Number(outbound?.price);
+
+            const price =
+              Number.isFinite(selectedRoundTripPrice) && selectedRoundTripPrice >= 0
+                ? selectedRoundTripPrice
+                : outboundPrice;
+
+            if (!Number.isFinite(price) || price < 0) return null;
+
+            return {
+              ...outboundNormalized,
+              id: `serp_${makeId(combinedKey)}`,
+              returnLeg: {
+                from: inboundNormalized.from,
+                to: inboundNormalized.to,
+                depTime: inboundNormalized.depTime,
+                arrTime: inboundNormalized.arrTime,
+                durationMinutes: inboundNormalized.durationMinutes,
+                stops: inboundNormalized.stops,
+                flightNumber: inboundNormalized.flightNumber,
+              },
+              price,
+              currency,
+              originalPrice: Math.round(price),
+              originalCurrency: currency,
+              bookingToken:
+                returnItem?.booking_token ||
+                outbound.booking_token ||
+                null,
+            };
+          })
           .filter(Boolean);
       } catch (err) {
         console.error('SerpApi return search failed:', err?.message || err);
